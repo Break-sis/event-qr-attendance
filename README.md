@@ -17,7 +17,7 @@ Sistema de control de asistencia y registro de eventos (NiceGUI + SQLModel + Pos
 
 ## Check-in
 En la pestaña **Check-in** hay tres formas de registrar asistencia:
-1. **Cámara del celular:** botón "Escanear con cámara" (requiere **HTTPS**; los navegadores bloquean la cámara en `http://IP:puerto`).
+1. **Cámara en vivo:** se abre sola al entrar a la pestaña y muestra el video en la página (botón "Activar/Detener cámara" y selector Trasera/Frontal). Requiere **HTTPS** (o `localhost`); los navegadores bloquean la cámara en `http://IP:puerto`.
 2. **Lector USB:** el lector escribe el token y envía Enter.
 3. **Manual:** pegar el token y pulsar Enter.
 

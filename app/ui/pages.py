@@ -24,16 +24,20 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 # Escáner por cámara (html5-qrcode se sirve localmente desde /libs).
 CAMERA_HEAD_HTML = """
 <script src="/libs/html5-qrcode.min.js"></script>
+<style>
+  #qr-reader { border: none !important; width: 100%; }
+  #qr-reader video { width: 100% !important; height: auto !important; display: block; }
+</style>
 <script>
 window.eqr = { scanner: null, last: "", lastAt: 0 };
-window.eqrStart = async function () {
+window.eqrStart = async function (facing) {
   if (window.eqr.scanner) return "ok";
   if (!window.isSecureContext) return "insecure";
   if (typeof Html5Qrcode === "undefined") return "error:No se cargó la librería del escáner.";
   try {
     const scanner = new Html5Qrcode("qr-reader");
     await scanner.start(
-      { facingMode: "environment" },
+      { facingMode: facing || "environment" },
       { fps: 10, qrbox: { width: 240, height: 240 } },
       (text) => {
         const now = Date.now();
@@ -129,13 +133,14 @@ class EventQRPage:
                 with ui.tab_panel("register"):
                     self._build_register_tab()
                 with ui.tab_panel("checkin"):
-                    focus_scanner, stop_camera = self._build_checkin_tab()
+                    focus_scanner, start_camera, stop_camera = self._build_checkin_tab()
                 with ui.tab_panel("reports"):
                     self._build_reports_tab()
 
         def on_tab_change(e) -> None:
             if e.value == "checkin":
                 ui.timer(0.3, focus_scanner, once=True)
+                ui.timer(0.4, start_camera, once=True)  # abre la cámara en vivo al entrar
             else:
                 stop_camera()
 
@@ -321,21 +326,30 @@ class EventQRPage:
     def _build_checkin_tab(self):
         history: list[dict] = []
         counter = {"n": 0}
-        camera = {"on": False}
+        camera = {"on": False, "busy": False, "token": 0}
 
         with ui.card().classes("w-full items-center p-6 gap-3"):
             ui.icon("qr_code_scanner", size="64px").classes("text-primary")
             ui.label("Terminal de Check-in").classes("text-h5")
             ui.label(
-                "Escanee el QR con la cámara del celular, con un lector USB "
+                "Apunte el QR a la cámara en vivo, use un lector USB "
                 "(envía Enter automáticamente) o pegue el token y pulse Enter."
             ).classes("text-grey text-center")
 
-            camera_btn = ui.button("Escanear con cámara", icon="photo_camera").classes("w-full max-w-xl")
-            camera_box = ui.column().classes("w-full max-w-xl items-center")
-            camera_box.set_visibility(False)
-            with camera_box:
-                ui.html('<div id="qr-reader" style="width:100%;max-width:420px;"></div>')
+            with ui.element("div").classes("relative w-full max-w-xl rounded-xl overflow-hidden bg-black").style(
+                "min-height: 300px"
+            ):
+                ui.html('<div id="qr-reader"></div>')
+                placeholder = ui.column().classes(
+                    "absolute-center items-center text-white text-center gap-1 p-4"
+                )
+                with placeholder:
+                    ui.icon("videocam_off", size="48px")
+                    status_lbl = ui.label("Cámara detenida")
+
+            with ui.row().classes("items-center justify-center gap-3"):
+                camera_btn = ui.button("Activar cámara", icon="photo_camera")
+                facing = ui.toggle({"environment": "Trasera", "user": "Frontal"}, value="environment")
 
             scan = (
                 ui.input(placeholder="Lector USB / pegar token y Enter")
@@ -354,8 +368,10 @@ class EventQRPage:
             history_table = ui.table(columns=columns, rows=[], row_key="id").classes("w-full")
 
         def focus_scanner() -> None:
-            if not camera["on"]:
-                scan.run_method("focus")
+            # En pantallas táctiles no se enfoca el campo para no abrir el teclado sobre la cámara.
+            ui.run_javascript(
+                "if (!window.matchMedia('(pointer: coarse)').matches) getElement(%d).focus()" % scan.id
+            )
 
         def process_token(raw: str) -> None:
             raw = (raw or "").strip()
@@ -406,39 +422,65 @@ class EventQRPage:
 
         def set_camera_ui(active: bool) -> None:
             camera["on"] = active
-            camera_box.set_visibility(active)
-            camera_btn.set_text("Detener cámara" if active else "Escanear con cámara")
-            camera_btn.props("icon=stop" if active else "icon=photo_camera")
-            camera_btn.props("color=negative" if active else "color=primary")
+            placeholder.set_visibility(not active)
+            camera_btn.set_text("Detener cámara" if active else "Activar cámara")
+            camera_btn.props("icon=stop color=negative" if active else "icon=photo_camera color=primary")
+
+        async def start_camera() -> None:
+            if camera["on"] or camera["busy"]:
+                return
+            camera["busy"] = True
+            camera["token"] += 1
+            token = camera["token"]
+            status_lbl.set_text("Iniciando cámara…")
+            try:
+                status = await ui.run_javascript(f"eqrStart('{facing.value}')", timeout=60)
+            except TimeoutError:
+                status = "error:La cámara tardó demasiado en responder."
+            finally:
+                camera["busy"] = False
+
+            if token != camera["token"]:
+                # Se pidió detener (o se cambió de pestaña) mientras arrancaba.
+                ui.run_javascript("eqrStop()")
+                set_camera_ui(False)
+                status_lbl.set_text("Cámara detenida")
+                return
+            if status == "ok":
+                set_camera_ui(True)
+                return
+
+            set_camera_ui(False)
+            if status == "insecure":
+                message = "La cámara requiere una conexión segura (HTTPS)."
+            else:
+                detail = (status or "").removeprefix("error:")
+                message = f"No se pudo iniciar la cámara: {detail}"
+            status_lbl.set_text(message + " Pulse «Activar cámara» para reintentar.")
+            ui.notify(message, type="negative", multi_line=True)
 
         def stop_camera() -> None:
+            camera["token"] += 1
             if camera["on"]:
                 ui.run_javascript("eqrStop()")
                 set_camera_ui(False)
+                status_lbl.set_text("Cámara detenida")
 
         async def toggle_camera() -> None:
+            if camera["on"] or camera["busy"]:
+                stop_camera()
+            else:
+                await start_camera()
+
+        async def change_facing() -> None:
             if camera["on"]:
                 stop_camera()
-                return
-            set_camera_ui(True)  # el contenedor debe ser visible antes de iniciar
-            try:
-                status = await ui.run_javascript("eqrStart()", timeout=60)
-            except TimeoutError:
-                status = "error:La cámara tardó demasiado en responder."
-            if status != "ok":
-                set_camera_ui(False)
-                if status == "insecure":
-                    ui.notify(
-                        "La cámara requiere una conexión segura (HTTPS).",
-                        type="negative",
-                        multi_line=True,
-                    )
-                else:
-                    detail = (status or "").removeprefix("error:")
-                    ui.notify(f"No se pudo iniciar la cámara: {detail}", type="negative", multi_line=True)
+                await ui.run_javascript("eqrStop()", timeout=10)
+                await start_camera()
 
         camera_btn.on_click(toggle_camera)
-        return focus_scanner, stop_camera
+        facing.on_value_change(change_facing)
+        return focus_scanner, start_camera, stop_camera
 
     # ------------------------------------------------------------ 4. Reportes
     def _build_reports_tab(self) -> None:
