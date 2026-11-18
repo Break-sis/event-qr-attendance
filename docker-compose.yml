@@ -1,4 +1,4 @@
-# La base de datos es externa (Supabase / PostgreSQL gestionado):
+# La base de datos es externa (Neon / PostgreSQL gestionado):
 # solo se levanta la aplicación web. DATABASE_URL se lee desde .env
 services:
   web:
